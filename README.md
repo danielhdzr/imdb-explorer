@@ -6,6 +6,8 @@ mínimo y rango de años. Proyecto de portafolio: backend en FastAPI con
 SQL dinámico sobre PostgreSQL, frontend en HTML/JS plano, todo empaquetado
 en Docker.
 
+![Interfaz de búsqueda](screenshots/busqueda.png)
+
 ## Qué hace
 
 - Búsqueda de títulos con coincidencia parcial por nombre.
@@ -61,6 +63,8 @@ imdb-explorer/
 ├── .env.example
 ├── main.py              # API FastAPI + montaje del frontend estático
 ├── requirements.txt
+├── screenshots/
+│   └── busqueda.png
 └── static/
     ├── index.html
     ├── style.css
