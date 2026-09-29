@@ -81,6 +81,7 @@ proyecto_app_imdb/
 ├── Dockerfile
 ├── docker-compose.yml
 ├── .dockerignore
+├── .env.example
 ├── main.py              # API FastAPI + montaje del frontend estático
 ├── requirements.txt
 └── static/
@@ -105,10 +106,12 @@ Parámetros de `/api/peliculas`: `titulo`, `tipo`, `genero`, `director`,
 
 Todo el stack (app + base) vive en `docker-compose.yml`, con dos
 servicios: `db` (Postgres 17, puerto 5433 hacia el host) y `web`
-(FastAPI, puerto 8000).
+(FastAPI, puerto 8000). Las credenciales de la base se definen en `.env`
+(ver `.env.example`); `docker-compose.yml` las lee automáticamente.
 
 ```bash
 cd proyecto_app_imdb
+cp .env.example .env   # si aún no existe
 docker compose up -d --build
 ```
 
@@ -122,6 +125,10 @@ pg_dump -h localhost -p 5432 -U <tu_usuario> -d imdb -Fc -f imdb.dump
 # Restauración dentro del contenedor (puerto 5433)
 pg_restore -h localhost -p 5433 -U imdb -d imdb --no-owner -j 4 imdb.dump
 ```
+
+> Los valores `imdb`/`imdb`/`imdb.dump` de arriba corresponden a las
+> variables `POSTGRES_USER` y `POSTGRES_DB` definidas en `.env` (ver
+> `.env.example`). Si cambias esas variables, ajusta el comando.
 
 Con los contenedores arriba y los datos migrados, el sitio queda en
 **http://localhost:8000**.
