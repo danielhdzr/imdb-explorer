@@ -47,20 +47,33 @@ function leerFiltros() {
 }
 
 
+// Si se lanza una búsqueda nueva antes de que termine la anterior, la vieja
+// se cancela para que su respuesta no pise a la nueva.
+let busquedaEnCurso = null;
+
 async function buscar() {
+  busquedaEnCurso?.abort();
+  const controller = new AbortController();
+  busquedaEnCurso = controller;
+
   estado.textContent = "Buscando...";
-  tbody.innerHTML = "";
 
   const params = leerFiltros();
-  const resp = await fetch(`/api/peliculas?${params.toString()}`);
-
-  if (!resp.ok) {
+  const inicio = performance.now();
+  let data;
+  try {
+    const resp = await fetch(`/api/peliculas?${params.toString()}`, { signal: controller.signal });
+    if (!resp.ok) throw new Error(resp.statusText);
+    data = await resp.json();
+  } catch (err) {
+    if (err.name === "AbortError") return;
     estado.textContent = "Ocurrió un error al buscar.";
     return;
   }
 
-  const data = await resp.json();
-  estado.textContent = `${data.total.toLocaleString()} resultado(s)`;
+  const segundos = ((performance.now() - inicio) / 1000).toFixed(2);
+  estado.textContent = `${data.total.toLocaleString()} resultado(s) · ${segundos} s`;
+  tbody.innerHTML = "";
 
   data.resultados.forEach(r => {
     const tr = document.createElement("tr");
@@ -70,7 +83,7 @@ async function buscar() {
       <td>${r.tipo ?? "—"}</td>
       <td>${(r.generos || []).join(", ") || "—"}</td>
       <td>${r.rating ?? "—"}</td>
-      <td>${(r.directores || []).join(", ") || "—"}</td>
+      <td>${resumirNombres(r.directores)}</td>
     `;
     tr.addEventListener("click", () => verDetalle(r.tconst));
     tbody.appendChild(tr);
@@ -154,6 +167,13 @@ modalFondo.addEventListener("click", (e) => {
 });
 
 // --- Utilidad ----------------------------------------------------------------
+
+// Las series traen el director de cada episodio; en la tabla basta con unos pocos.
+function resumirNombres(nombres, max = 3) {
+  if (!nombres || nombres.length === 0) return "—";
+  const visibles = nombres.slice(0, max).map(escapeHtml).join(", ");
+  return nombres.length > max ? `${visibles} y ${nombres.length - max} más` : visibles;
+}
 
 function escapeHtml(str) {
   const div = document.createElement("div");
