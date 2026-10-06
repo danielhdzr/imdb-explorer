@@ -1,12 +1,11 @@
 """
-IMDb Explorer — backend FastAPI (Versión Original Restaurada)
+IMDb Explorer — backend FastAPI
 """
 
 import os
 from contextlib import contextmanager
 from typing import Optional
 
-import psycopg
 from psycopg import sql
 from psycopg_pool import ConnectionPool
 from fastapi import FastAPI, HTTPException, Query
@@ -16,24 +15,20 @@ from fastapi.staticfiles import StaticFiles
 # Conexión a la base de datos
 # ---------------------------------------------------------------------------
 
-DB_CONFIG = {
-    "host": os.environ.get("DB_HOST", "localhost"),
-    "port": os.environ.get("DB_PORT", "5432"),
-    "dbname": os.environ.get("DB_NAME", "imdb"),
-}
-if os.environ.get("DB_USER"):
-    DB_CONFIG["user"] = os.environ["DB_USER"]
-if os.environ.get("DB_PASSWORD"):
-    DB_CONFIG["password"] = os.environ["DB_PASSWORD"]
+# Cadena de conexión completa, p. ej. la que da Neon:
+# postgresql://usuario:clave@ep-xxxx.region.aws.neon.tech/imdb?sslmode=require
+DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://localhost/imdb")
 
-# Construimos el string de conexión para Psycopg 3
-conn_str = f"host={DB_CONFIG['host']} port={DB_CONFIG['port']} dbname={DB_CONFIG['dbname']}"
-if "user" in DB_CONFIG:
-    conn_str += f" user={DB_CONFIG['user']}"
-if "password" in DB_CONFIG:
-    conn_str += f" password={DB_CONFIG['password']}"
-
-pool = ConnectionPool(conninfo=conn_str, min_size=1, max_size=10)
+# check_connection descarta conexiones que el servidor cerró mientras
+# estaban ociosas (Neon suspende la base tras unos minutos sin uso).
+pool = ConnectionPool(
+    conninfo=DATABASE_URL,
+    min_size=1,
+    max_size=5,
+    max_idle=120,
+    check=ConnectionPool.check_connection,
+    open=False,
+)
 
 
 @contextmanager
@@ -55,8 +50,9 @@ GENEROS = [
     "Talk-Show", "Thriller", "War", "Western",
 ]
 
+# tvEpisode no se carga en la base (ver cargar_datos.py).
 TIPOS_TITULO = [
-    "movie", "short", "tvSeries", "tvEpisode", "tvMovie", "tvMiniSeries",
+    "movie", "short", "tvSeries", "tvMovie", "tvMiniSeries",
     "tvSpecial", "tvShort", "video", "videoGame",
 ]
 
@@ -65,167 +61,151 @@ PAGE_SIZE = 20
 app = FastAPI(title="IMDb Explorer")
 
 
+@app.on_event("startup")
+def abrir_pool():
+    pool.open()
+
+
+@app.on_event("shutdown")
+def cerrar_pool():
+    pool.close()
+
+
+def tconst(title_id):
+    return f"tt{title_id:07d}"
+
+
+def title_id(tconst_str):
+    """'tt0133093' -> 133093; None si el formato no es válido."""
+    if tconst_str.startswith("tt") and tconst_str[2:].isdigit():
+        return int(tconst_str[2:])
+    return None
+
+
+def patron_ilike(texto):
+    """Coincidencia parcial, escapando los comodines que escriba el usuario."""
+    texto = texto.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{texto}%"
+
+
 # ---------------------------------------------------------------------------
-# Construcción dinámica de la consulta (Original)
+# Construcción dinámica de la consulta
 # ---------------------------------------------------------------------------
 
 def construir_filtros(
     titulo, tipo, genero, director, actor, rating_min, year_min, year_max
 ):
-    joins = []
     condiciones = []
     params = []
 
     if titulo:
-        condiciones.append(sql.SQL("tb.primary_title ILIKE %s"))
-        params.append(f"%{titulo}%")
+        # Usa el índice de trigramas titles_primary_title_trgm.
+        condiciones.append(sql.SQL("t.primary_title ILIKE %s"))
+        params.append(patron_ilike(titulo))
 
     if tipo:
-        condiciones.append(sql.SQL("tb.title_type = %s"))
+        condiciones.append(sql.SQL("t.title_type = %s"))
         params.append(tipo)
 
     if genero:
-        condiciones.append(
-            sql.SQL(
-                "EXISTS (SELECT 1 FROM unnest(tb.genres) g WHERE g ILIKE %s)"
-            )
-        )
+        # Normaliza mayúsculas contra el catálogo para que @> use el índice GIN.
+        genero = next((g for g in GENEROS if g.lower() == genero.lower()), genero)
+        condiciones.append(sql.SQL("t.genres @> ARRAY[%s]::text[]"))
         params.append(genero)
 
     if rating_min is not None:
-        condiciones.append(sql.SQL("tr.average_rating >= %s"))
+        condiciones.append(sql.SQL("t.average_rating >= %s"))
         params.append(rating_min)
 
     if year_min is not None:
-        condiciones.append(sql.SQL("tb.start_year >= %s"))
+        condiciones.append(sql.SQL("t.start_year >= %s"))
         params.append(year_min)
 
     if year_max is not None:
-        condiciones.append(sql.SQL("tb.start_year <= %s"))
+        condiciones.append(sql.SQL("t.start_year <= %s"))
         params.append(year_max)
 
+    # Director y actor como semi-join (IN) en vez de JOIN + DISTINCT: primero
+    # se encuentran las personas por trigramas y luego sus títulos por índice.
     if director:
-        joins.append(
-            sql.SQL(
-                "JOIN title_directors td ON td.tconst = tb.tconst "
-                "JOIN name_basics nd ON nd.nconst = td.nconst"
-            )
-        )
-        condiciones.append(sql.SQL("nd.primary_name ILIKE %s"))
-        params.append(f"%{director}%")
+        condiciones.append(sql.SQL(
+            "t.id IN (SELECT d.title_id FROM people p"
+            " JOIN title_directors d ON d.person_id = p.id"
+            " WHERE p.primary_name ILIKE %s)"
+        ))
+        params.append(patron_ilike(director))
 
     if actor:
-        joins.append(
-            sql.SQL(
-                "JOIN title_principals tp ON tp.tconst = tb.tconst "
-                "AND tp.category IN ('actor', 'actress') "
-                "JOIN name_basics na ON na.nconst = tp.nconst"
+        condiciones.append(sql.SQL(
+            "t.id IN (SELECT tp.title_id FROM people p"
+            " JOIN title_principals tp ON tp.person_id = p.id"
+            " WHERE tp.category IN ('actor', 'actress')"
+            " AND p.primary_name ILIKE %s)"
+        ))
+        params.append(patron_ilike(actor))
+
+    where = sql.SQL(" AND ").join(condiciones) if condiciones else sql.SQL("TRUE")
+    return where, params
+
+
+def buscar(where, params, page):
+    """Página de resultados + total + directores, en una sola consulta."""
+    query = sql.SQL(
+        """
+        WITH pagina AS (
+            SELECT t.id, t.primary_title, t.title_type, t.start_year,
+                   t.genres, t.average_rating, t.num_votes,
+                   count(*) OVER () AS total
+            FROM titles t
+            WHERE {where}
+            ORDER BY t.num_votes DESC, t.id
+            LIMIT %s OFFSET %s
+        )
+        SELECT pg.id, pg.primary_title, pg.title_type, pg.start_year,
+               pg.genres, pg.average_rating, pg.num_votes, pg.total,
+               ARRAY(
+                   SELECT p.primary_name
+                   FROM title_directors d JOIN people p ON p.id = d.person_id
+                   WHERE d.title_id = pg.id
+                   ORDER BY p.primary_name
+               ) AS directores
+        FROM pagina pg
+        ORDER BY pg.num_votes DESC, pg.id
+        """
+    ).format(where=where)
+
+    with get_cursor() as cur:
+        cur.execute(query, params + [PAGE_SIZE, (page - 1) * PAGE_SIZE])
+        filas = cur.fetchall()
+
+        if filas:
+            total = filas[0][7]
+        elif page > 1:
+            # Página fuera de rango: el total no viene en ninguna fila.
+            cur.execute(
+                sql.SQL("SELECT count(*) FROM titles t WHERE {where}").format(
+                    where=where
+                ),
+                params,
             )
-        )
-        condiciones.append(sql.SQL("na.primary_name ILIKE %s"))
-        params.append(f"%{actor}%")
+            total = cur.fetchone()[0]
+        else:
+            total = 0
 
-    return joins, condiciones, params
-
-
-def buscar_tconsts(filtros_joins, condiciones, params, page, page_size):
-    joins_sql = sql.SQL(" ").join(filtros_joins)
-    where_sql = (
-        sql.SQL(" AND ").join(condiciones) if condiciones else sql.SQL("TRUE")
-    )
-
-    query = sql.SQL(
-        """
-        SELECT DISTINCT tb.tconst
-        FROM title_basics tb
-        LEFT JOIN title_ratings tr ON tr.tconst = tb.tconst
-        {joins}
-        WHERE {where}
-        ORDER BY tb.tconst
-        LIMIT %s OFFSET %s
-        """
-    ).format(joins=joins_sql, where=where_sql)
-
-    with get_cursor() as cur:
-        cur.execute(query, params + [page_size, (page - 1) * page_size])
-        filas = cur.fetchall()
-
-    return [f[0] for f in filas]
-
-
-def contar_total(filtros_joins, condiciones, params):
-    joins_sql = sql.SQL(" ").join(filtros_joins)
-    where_sql = (
-        sql.SQL(" AND ").join(condiciones) if condiciones else sql.SQL("TRUE")
-    )
-
-    query = sql.SQL(
-        """
-        SELECT COUNT(DISTINCT tb.tconst)
-        FROM title_basics tb
-        LEFT JOIN title_ratings tr ON tr.tconst = tb.tconst
-        {joins}
-        WHERE {where}
-        """
-    ).format(joins=joins_sql, where=where_sql)
-
-    with get_cursor() as cur:
-        cur.execute(query, params)
-        return cur.fetchone()[0]
-
-
-def obtener_detalle_lista(tconsts):
-    if not tconsts:
-        return []
-
-    query = sql.SQL(
-        """
-        SELECT
-            tb.tconst,
-            tb.primary_title,
-            tb.title_type,
-            tb.start_year,
-            tb.genres,
-            tr.average_rating,
-            tr.num_votes,
-            COALESCE(
-                array_agg(DISTINCT nd.primary_name)
-                    FILTER (WHERE nd.primary_name IS NOT NULL),
-                '{{}}'
-            ) AS directores
-        FROM title_basics tb
-        LEFT JOIN title_ratings tr ON tr.tconst = tb.tconst
-        LEFT JOIN title_directors td ON td.tconst = tb.tconst
-        LEFT JOIN name_basics nd ON nd.nconst = td.nconst
-        WHERE tb.tconst = ANY(%s)
-        GROUP BY tb.tconst, tb.primary_title, tb.title_type, tb.start_year,
-                 tb.genres, tr.average_rating, tr.num_votes
-        """
-    )
-
-    with get_cursor() as cur:
-        cur.execute(query, [tconsts])
-        filas = cur.fetchall()
-
-    por_id = {f[0]: f for f in filas}
-    resultado = []
-    for tconst in tconsts:
-        f = por_id.get(tconst)
-        if not f:
-            continue
-        resultado.append(
-            {
-                "tconst": f[0],
-                "titulo": f[1],
-                "tipo": f[2],
-                "anio": f[3],
-                "generos": f[4] or [],
-                "rating": float(f[5]) if f[5] is not None else None,
-                "votos": f[6],
-                "directores": f[7],
-            }
-        )
-    return resultado
+    resultados = [
+        {
+            "tconst": tconst(f[0]),
+            "titulo": f[1],
+            "tipo": f[2],
+            "anio": f[3],
+            "generos": f[4] or [],
+            "rating": float(f[5]) if f[5] is not None else None,
+            "votos": f[6],
+            "directores": f[8],
+        }
+        for f in filas
+    ]
+    return resultados, total
 
 
 @app.get("/api/generos")
@@ -250,13 +230,10 @@ def buscar_peliculas(
     year_max: Optional[int] = None,
     page: int = Query(1, ge=1),
 ):
-    joins, condiciones, params = construir_filtros(
+    where, params = construir_filtros(
         titulo, tipo, genero, director, actor, rating_min, year_min, year_max
     )
-
-    total = contar_total(joins, condiciones, params)
-    tconsts = buscar_tconsts(joins, condiciones, params, page, PAGE_SIZE)
-    resultados = obtener_detalle_lista(tconsts)
+    resultados, total = buscar(where, params, page)
 
     return {
         "resultados": resultados,
@@ -267,81 +244,60 @@ def buscar_peliculas(
     }
 
 
-@app.get("/api/pelicula/{tconst}")
-def detalle_pelicula(tconst: str):
+@app.get("/api/pelicula/{tconst_str}")
+def detalle_pelicula(tconst_str: str):
+    tid = title_id(tconst_str)
+    if tid is None:
+        raise HTTPException(status_code=404, detail="Título no encontrado")
+
+    # Todo el detalle en una consulta: con la base en la nube, cada ida y
+    # vuelta extra cuesta decenas de milisegundos.
     with get_cursor() as cur:
         cur.execute(
             """
-            SELECT tb.tconst, tb.primary_title, tb.original_title,
-                   tb.title_type, tb.start_year, tb.end_year,
-                   tb.runtime_minutes, tb.genres,
-                   tr.average_rating, tr.num_votes
-            FROM title_basics tb
-            LEFT JOIN title_ratings tr ON tr.tconst = tb.tconst
-            WHERE tb.tconst = %s
+            SELECT t.primary_title, t.original_title, t.title_type,
+                   t.start_year, t.end_year, t.runtime_minutes, t.genres,
+                   t.average_rating, t.num_votes,
+                   ARRAY(SELECT p.primary_name FROM title_directors d
+                         JOIN people p ON p.id = d.person_id
+                         WHERE d.title_id = t.id ORDER BY p.primary_name),
+                   ARRAY(SELECT p.primary_name FROM title_writers w
+                         JOIN people p ON p.id = w.person_id
+                         WHERE w.title_id = t.id ORDER BY p.primary_name),
+                   COALESCE((
+                       SELECT json_agg(json_build_object(
+                                  'nombre', p.primary_name,
+                                  'categoria', tp.category,
+                                  'personaje', tp.characters)
+                              ORDER BY tp.ordering)
+                       FROM title_principals tp
+                       JOIN people p ON p.id = tp.person_id
+                       WHERE tp.title_id = t.id
+                   ), '[]')
+            FROM titles t
+            WHERE t.id = %s
             """,
-            [tconst],
+            [tid],
         )
-        base = cur.fetchone()
-        if not base:
-            raise HTTPException(status_code=404, detail="Título no encontrado")
+        f = cur.fetchone()
 
-        cur.execute(
-            """
-            SELECT nb.primary_name
-            FROM title_directors td
-            JOIN name_basics nb ON nb.nconst = td.nconst
-            WHERE td.tconst = %s
-            """,
-            [tconst],
-        )
-        directores = [r[0] for r in cur.fetchall()]
-
-        cur.execute(
-            """
-            SELECT nb.primary_name
-            FROM title_writers tw
-            JOIN name_basics nb ON nb.nconst = tw.nconst
-            WHERE tw.tconst = %s
-            """,
-            [tconst],
-        )
-        guionistas = [r[0] for r in cur.fetchall()]
-
-        cur.execute(
-            """
-            SELECT nb.primary_name, tp.category, tp.job, tp.characters
-            FROM title_principals tp
-            JOIN name_basics nb ON nb.nconst = tp.nconst
-            WHERE tp.tconst = %s
-            ORDER BY tp.ordering
-            """,
-            [tconst],
-        )
-        reparto = [
-            {
-                "nombre": r[0],
-                "categoria": r[1],
-                "job": r[2],
-                "personaje": r[3],
-            }
-            for r in cur.fetchall()
-        ]
+    if not f:
+        raise HTTPException(status_code=404, detail="Título no encontrado")
 
     return {
-        "tconst": base[0],
-        "titulo": base[1],
-        "titulo_original": base[2],
-        "tipo": base[3],
-        "anio_inicio": base[4],
-        "anio_fin": base[5],
-        "duracion_min": base[6],
-        "generos": base[7] or [],
-        "rating": float(base[8]) if base[8] is not None else None,
-        "votos": base[9],
-        "directores": directores,
-        "guionistas": guionistas,
-        "reparto": reparto,
+        "tconst": tconst(tid),
+        "titulo": f[0],
+        "titulo_original": f[1] or f[0],
+        "tipo": f[2],
+        "anio_inicio": f[3],
+        "anio_fin": f[4],
+        "duracion_min": f[5],
+        "generos": f[6] or [],
+        "rating": float(f[7]) if f[7] is not None else None,
+        "votos": f[8],
+        "directores": f[9],
+        "guionistas": f[10],
+        "reparto": f[11],
     }
 
 

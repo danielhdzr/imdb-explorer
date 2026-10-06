@@ -1,17 +1,18 @@
 # IMDb Explorer
 
-Sitio web para consultar una base local de IMDb con filtros por título,
-tipo, género, director, actor/actriz, rating mínimo y rango de años.
-Proyecto de portafolio: backend en FastAPI con SQL dinámico sobre
-PostgreSQL, frontend en HTML/JS plano, todo empaquetado en Docker.
+Sitio web para consultar IMDb con filtros por título, tipo, género,
+director, actor/actriz, rating mínimo y rango de años. Proyecto de
+portafolio: backend en FastAPI con SQL dinámico sobre PostgreSQL,
+frontend en HTML/JS plano, todo empaquetado en Docker.
 
 ## Qué hace
 
 - Búsqueda de títulos con coincidencia parcial por nombre.
 - Filtros combinables: tipo de título, género, director, actor/actriz,
   rating mínimo, rango de años.
-- Resultados paginados (20 por página).
-- Vista de detalle por título: sinopsis básica, reparto principal,
+- Resultados paginados (20 por página), ordenados por popularidad
+  (número de votos).
+- Vista de detalle por título: datos básicos, reparto principal,
   director(es) y guionista(s).
 
 ## Stack
@@ -20,59 +21,92 @@ PostgreSQL, frontend en HTML/JS plano, todo empaquetado en Docker.
 |------------|-----------------------------------------------|
 | Backend    | FastAPI (Python), consultas SQL dinámicas     |
 | Driver DB  | psycopg 3 + psycopg_pool (pool de conexiones) |
-| Base       | PostgreSQL 17                                 |
+| Base       | PostgreSQL en Neon (plan gratuito)            |
 | Frontend   | HTML + CSS + JavaScript vanilla               |
-| Empaquetado| Docker / docker-compose (servicios `db` y `web`) |
+| Empaquetado| Docker / docker-compose (servicio `web`)      |
 
 ## Origen de los datos
 
-La base viene de los datasets públicos de IMDb (`title.basics`,
-`title.ratings`, `name.basics`, `title.principals`, `title.akas`, etc.),
-cargados con `COPY` directo desde los TSV oficiales. Sobre esos datos se
-aplicaron varias mejoras de estructura antes de construir el sitio:
+Los datos vienen de los datasets públicos de IMDb
+(<https://datasets.imdbws.com/>). `cargar_datos.py` los descarga en
+streaming, filtra cada fila al vuelo y la manda a la base con `COPY`:
+**nada se escribe en disco local**.
 
-- `genres` convertido de texto plano a arreglo (`text[]`) con índice GIN.
-- `directors` y `writers` normalizados en tablas propias
-  (`title_directors`, `title_writers`) en vez de listas embebidas.
-- Claves primarias y 10 claves foráneas entre las 8 tablas finales.
-- Índice de trigramas (`pg_trgm`) sobre `name_basics.primary_name` para
-  que las búsquedas por nombre de director/actor no tengan que escanear
-  completa una tabla de ~15.6M de personas.
+### Por qué un subconjunto
 
-### Esquema relevante
+La base completa (~250M filas, ~27 GB con índices) no cabe en ningún plan
+gratuito de Postgres administrado. Para caber en los 0.5 GB de Neon:
+
+- Solo títulos con **≥ 200 votos** (~170k). Cubre prácticamente todo lo
+  que alguien buscaría; el resto son títulos casi sin actividad.
+- Sin **episodios sueltos de series** (`tvEpisode`). Las series sí están.
+- Sin `title_akas` ni `title_episode`, que el sitio no usaba.
+- Del reparto solo se guardan `actor`, `actress` y `self`; directores y
+  guionistas salen de `title.crew`.
+- Personas: solo las que aparecen en algún título cargado, y solo su
+  nombre.
+- IDs como `integer` (`tt0133093` → `133093`) en vez de texto: ocupan
+  menos y comparan más rápido. La API los sigue exponiendo como `tt…`.
+
+Resultado: ~340 MB con índices. El umbral se puede cambiar con
+`python cargar_datos.py --min-votos N`.
+
+### Esquema
 
 ```
-title_basics      (tconst, title_type, primary_title, original_title,
-                    is_adult, start_year, end_year, runtime_minutes, genres[])
-title_ratings     (tconst, average_rating, num_votes)
-title_directors   (tconst, nconst)
-title_writers     (tconst, nconst)
-title_principals  (tconst, ordering, nconst, category, job, characters)
-name_basics       (nconst, primary_name, birth_year, death_year,
-                    primary_profession, known_for_titles)
-title_akas        (títulos alternativos por región/idioma)
+titles            (id, title_type, primary_title, original_title,
+                    start_year, end_year, runtime_minutes, genres[],
+                    average_rating, num_votes)
+people            (id, primary_name)
+title_directors   (title_id, person_id)
+title_writers     (title_id, person_id)
+title_principals  (title_id, ordering, person_id, category, characters)
 ```
 
-Tamaño aproximado de las tablas más grandes: `title_principals` ~101.9M
-filas, `title_akas` ~59.5M, `name_basics` ~15.6M, `title_basics` ~12.8M.
+El rating y los votos van dentro de `titles` (antes eran una tabla
+aparte): todos los títulos cargados tienen rating, y así ordenar y
+filtrar por ellos no requiere un `JOIN`.
 
-## Cómo arman los filtros la consulta
+Índices:
 
-En vez de un único query gigante siempre con todos los `JOIN`, el backend
-arma la consulta en dos pasos:
+- `titles.primary_title` y `people.primary_name`: GIN de trigramas
+  (`pg_trgm`), para que `ILIKE '%texto%'` no recorra la tabla completa.
+- `titles.genres`: GIN, usado por `genres @> ARRAY['Drama']`.
+- `titles (num_votes DESC, id)`: el orden por defecto de los resultados.
+- `person_id` en `title_directors` y `title_principals`: para ir de una
+  persona a sus títulos.
 
-1. **Búsqueda de IDs**: un `SELECT DISTINCT tconst` que solo agrega los
-   `JOIN` que hacen falta según qué filtros vengan llenos (por ejemplo,
-   si no se filtra por actor, nunca se toca `title_principals`). Ya
-   viene paginado con `LIMIT`/`OFFSET`.
-2. **Detalle de esa página**: con el puñado de IDs resultante (máximo 20),
-   un segundo query trae título, año, géneros, rating y directores vía
-   `array_agg`, evitando duplicados de un `GROUP BY` sobre tablas enormes.
+## Cómo se arma la búsqueda
 
-El filtro de director/actor hace `ILIKE` sobre `name_basics.primary_name`
-(por eso el índice de trigramas es importante para el rendimiento). El
-filtro de género usa `EXISTS (SELECT 1 FROM unnest(genres) ...)` para
-comparar contra el arreglo sin depender de mayúsculas/minúsculas exactas.
+Cada búsqueda es **una sola consulta** a la base (importante con la base
+en la nube, donde cada ida y vuelta cuesta decenas de milisegundos):
+
+```sql
+WITH pagina AS (
+    SELECT t.*, count(*) OVER () AS total
+    FROM titles t
+    WHERE <filtros>
+    ORDER BY t.num_votes DESC, t.id
+    LIMIT 20 OFFSET ...
+)
+SELECT pagina.*, ARRAY(<directores del título>) FROM pagina
+```
+
+- `count(*) OVER ()` trae el total junto con la página, sin una segunda
+  consulta de conteo.
+- Los directores se buscan solo para las 20 filas de la página.
+- Los filtros se agregan solo si vienen llenos. Director y actor son
+  semi-joins (`t.id IN (SELECT ... WHERE primary_name ILIKE ...)`) en vez
+  de `JOIN` + `DISTINCT`: primero se encuentran las personas con el índice
+  de trigramas y luego sus títulos por índice.
+- El texto del usuario se escapa (`%`, `_`) antes del `ILIKE`.
+
+El detalle de un título también es una sola consulta (antes eran cuatro),
+con directores, guionistas y reparto como subconsultas.
+
+En el frontend, una búsqueda nueva cancela la anterior
+(`AbortController`) para que una respuesta lenta no pise a una más
+reciente, y se muestra el tiempo que tardó cada búsqueda.
 
 ## Estructura del proyecto
 
@@ -82,6 +116,7 @@ proyecto_app_imdb/
 ├── docker-compose.yml
 ├── .dockerignore
 ├── .env.example
+├── cargar_datos.py      # carga IMDb → Postgres en streaming
 ├── main.py              # API FastAPI + montaje del frontend estático
 ├── requirements.txt
 └── static/
@@ -104,52 +139,24 @@ Parámetros de `/api/peliculas`: `titulo`, `tipo`, `genero`, `director`,
 
 ## Cómo correrlo
 
-Todo el stack (app + base) vive en `docker-compose.yml`, con dos
-servicios: `db` (Postgres 17, puerto 5433 hacia el host) y `web`
-(FastAPI, puerto 8000). Las credenciales de la base se definen en `.env`
-(ver `.env.example`); `docker-compose.yml` las lee automáticamente.
-
-```bash
-cd proyecto_app_imdb
-cp .env.example .env   # si aún no existe
-docker compose up -d --build
-```
-
-La base nace vacía dentro del contenedor — los datos se migran una sola
-vez desde el Postgres local con `pg_dump` / `pg_restore`:
-
-```bash
-# Volcado de la base local (Postgres.app, puerto 5432)
-pg_dump -h localhost -p 5432 -U <tu_usuario> -d imdb -Fc -f imdb.dump
-
-# Restauración dentro del contenedor (puerto 5433)
-pg_restore -h localhost -p 5433 -U imdb -d imdb --no-owner -j 4 imdb.dump
-```
-
-> Los valores `imdb`/`imdb`/`imdb.dump` de arriba corresponden a las
-> variables `POSTGRES_USER` y `POSTGRES_DB` definidas en `.env` (ver
-> `.env.example`). Si cambias esas variables, ajusta el comando.
-
-Con los contenedores arriba y los datos migrados, el sitio queda en
-**http://localhost:8000**.
+Ver la sección *Cómo levantarlo* del [README](README.md). En resumen:
+crear un proyecto gratuito en Neon, poner su cadena de conexión en
+`DATABASE_URL` dentro de `.env`, correr `cargar_datos.py` una vez y
+levantar la app con `docker compose up -d --build`.
 
 ## Decisiones de diseño
 
-- **Todo en local, sin hosting**: por el tamaño de la base (varios GB,
-  ~250M filas en total entre las tablas grandes), no cabía en los tiers
-  gratuitos de Postgres administrado (Supabase, Neon, Railway), así que
-  se descartó el despliegue y el proyecto corre completo en la Mac.
+- **Base en la nube, subconjunto de datos**: la base completa ocupaba
+  ~27 GB en disco local. Se movió a Neon (gratuito) cargando solo lo que
+  el sitio usa y los títulos con suficiente actividad.
+- **Carga en streaming**: el script lee los `.tsv.gz` directo de IMDb y
+  los inserta con `COPY`, sin archivos intermedios. Es idempotente: se
+  puede volver a correr para actualizar los datos.
 - **Frontend sin framework**: HTML/JS plano servido por la misma app de
-  FastAPI, para mantener el proyecto simple y con una sola pieza que
-  levantar.
-- **Dos pasos en vez de un solo query con GROUP BY**: se evitó agrupar
-  sobre tablas de cientos de millones de filas; el filtrado (con los
-  JOIN condicionales) y el detalle de la página se separaron para que
-  cada consulta toque solo lo necesario.
+  FastAPI, para mantener el proyecto simple.
 
 ## Posibles próximos pasos
 
-- Mostrar títulos alternativos (`title_akas`) en la vista de detalle.
-- Cachear el conteo total de resultados si la paginación se siente
-  lenta con filtros muy amplios (por ejemplo, solo género).
-- Capturas de pantalla o un GIF corto del sitio para el portafolio.
+- Desplegar la app (Render/Fly.io gratuitos) apuntando a la misma base.
+- Correr `cargar_datos.py` periódicamente (IMDb actualiza los datasets a
+  diario).

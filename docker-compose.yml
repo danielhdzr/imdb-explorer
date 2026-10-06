@@ -1,32 +1,8 @@
 services:
-  db:
-    image: postgres:17
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-    volumes:
-      - imdb_data:/var/lib/postgresql/data
-    ports:
-      # Puerto distinto al 5432 de tu Postgres.app local, para que no choquen
-      # mientras migras los datos. Puedes quitar esta línea una vez migrado
-      # si no necesitas verla desde Postico.
-      - "5433:5432"
-
   web:
     build: .
     restart: unless-stopped
-    depends_on:
-      - db
-    environment:
-      DB_HOST: db
-      DB_PORT: 5432
-      DB_NAME: ${POSTGRES_DB}
-      DB_USER: ${POSTGRES_USER}
-      DB_PASSWORD: ${POSTGRES_PASSWORD}
+    # La base vive en la nube (Neon); DATABASE_URL se lee de .env.
+    env_file: .env
     ports:
       - "8000:8000"
-
-volumes:
-  imdb_data:
