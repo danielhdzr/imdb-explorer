@@ -1,85 +1,102 @@
 # IMDb Explorer
 
-Sitio web para consultar IMDb con filtros por título, tipo, género,
-director, actor/actriz, rating mínimo y rango de años. Proyecto de
-portafolio: backend en FastAPI con SQL dinámico sobre PostgreSQL (alojado
-gratis en Neon), frontend en HTML/JS plano, empaquetado en Docker.
+**English** | [Español](README.es.md)
 
-![Interfaz de búsqueda](screenshots/busqueda.png)
+A website to search IMDb with filters by title, type, genre, director,
+actor/actress, minimum rating and year range. Portfolio project: FastAPI
+backend with dynamic SQL over PostgreSQL (hosted for free on Neon), plain
+HTML/JS frontend, packaged with Docker.
 
-## Qué hace
+![Search interface](screenshots/busqueda.png)
 
-- Búsqueda de títulos con coincidencia parcial por nombre.
-- Filtros combinables: tipo de título, género, director, actor/actriz,
-  rating mínimo, rango de años.
-- Resultados paginados.
-- Vista de detalle por título: sinopsis básica, reparto principal,
-  director(es) y guionista(s).
+> The interface and the API field names are in Spanish; this README
+> explains them in English.
+
+## Features
+
+- Title search with partial name matching.
+- Combinable filters: title type, genre, director, actor/actress,
+  minimum rating, year range.
+- Paginated results.
+- Title detail view: basic info, main cast, director(s) and writer(s).
 
 ## Stack
 
-| Capa        | Tecnología                                       |
+| Layer       | Technology                                        |
 |-------------|---------------------------------------------------|
-| Backend     | FastAPI (Python), consultas SQL dinámicas          |
-| Driver DB   | psycopg 3 + psycopg_pool (pool de conexiones)      |
-| Base        | PostgreSQL en Neon (plan gratuito, ~340 MB)         |
-| Frontend    | HTML + CSS + JavaScript vanilla                    |
-| Empaquetado | Docker / docker-compose (servicio `web`)           |
+| Backend     | FastAPI (Python), dynamic SQL queries             |
+| DB driver   | psycopg 3 + psycopg_pool (connection pool)        |
+| Database    | PostgreSQL on Neon (free plan, ~340 MB)           |
+| Frontend    | HTML + CSS + vanilla JavaScript                   |
+| Packaging   | Docker / docker-compose (`web` service)           |
 
-## Cómo levantarlo
+## Getting started
 
-La base no vive en tu computadora: se aloja en [Neon](https://neon.tech)
-(plan gratuito, 0.5 GB) y se llena directamente desde los datasets
-públicos de IMDb, sin descargar nada a disco.
+The database does not live on your computer: it is hosted on
+[Neon](https://neon.tech) (free plan, 0.5 GB) and is filled straight from
+IMDb's public datasets, without downloading anything to disk.
 
-1. Crea una cuenta y un proyecto en Neon y copia la cadena de conexión
+1. Create a Neon account and project, and copy the connection string
    (*Dashboard → Connect*).
-2. Configura el proyecto:
+2. Set up the project:
 
    ```bash
    git clone https://github.com/danielhdzr/imdb-explorer.git
    cd imdb-explorer
-   cp .env.example .env      # pega ahí tu DATABASE_URL
+   cp .env.example .env      # paste your DATABASE_URL there
    python3 -m venv venv && venv/bin/pip install -r requirements.txt
    ```
 
-3. Carga los datos (una sola vez, ~15–30 min según tu conexión):
+3. Load the data (once, a few minutes depending on your connection):
 
    ```bash
    set -a; source .env; set +a
    venv/bin/python cargar_datos.py
    ```
 
-4. Levanta el sitio, con Docker o directo:
+4. Start the site, with Docker or directly:
 
    ```bash
    docker compose up -d --build
-   # o bien: venv/bin/uvicorn main:app --env-file .env
+   # or: venv/bin/uvicorn main:app --env-file .env
    ```
 
-El sitio queda en **http://localhost:8000**.
+The site runs at **http://localhost:8000**.
 
-> **Sobre los datos**: para caber en el plan gratuito se cargan los
-> títulos con al menos 200 votos (~170k: todas las películas y series
-> conocidas), sin episodios sueltos de series ni títulos alternativos.
-> El umbral se cambia con `--min-votos`. Detalles en
-> [DOCUMENTACION.md](DOCUMENTACION.md).
+> **About the data**: to fit in the free plan, only titles with at least
+> 200 votes are loaded (~173k: every well-known movie and series), without
+> individual TV episodes or alternative titles. The threshold can be
+> changed with `--min-votos`. Details in
+> [DOCUMENTACION.md](DOCUMENTACION.md) (Spanish).
 
-## Documentación técnica
+## API
 
-Esquema de la base, diseño de los endpoints, cómo se arman las consultas
-con filtros dinámicos, y las decisiones de diseño del proyecto están en
-[DOCUMENTACION.md](DOCUMENTACION.md).
+| Method | Route                    | Description                         |
+|--------|--------------------------|-------------------------------------|
+| GET    | `/api/generos`           | Fixed list of IMDb genres           |
+| GET    | `/api/tipos`             | Fixed list of title types           |
+| GET    | `/api/peliculas`         | Search with filters + pagination    |
+| GET    | `/api/pelicula/{tconst}` | Full detail of a title              |
 
-## Estructura del proyecto
+`/api/peliculas` parameters: `titulo` (title), `tipo` (type), `genero`
+(genre), `director`, `actor`, `rating_min`, `year_min`, `year_max`,
+`page`. Interactive docs at http://localhost:8000/docs.
+
+## Technical documentation
+
+The database schema, endpoint design, how queries are built with dynamic
+filters, and the project's design decisions are described in
+[DOCUMENTACION.md](DOCUMENTACION.md) (Spanish).
+
+## Project structure
 
 ```
 imdb-explorer/
 ├── Dockerfile
 ├── docker-compose.yml
 ├── .env.example
-├── cargar_datos.py      # carga IMDb → Postgres en streaming
-├── main.py              # API FastAPI + montaje del frontend estático
+├── cargar_datos.py      # streams IMDb → Postgres
+├── main.py              # FastAPI API + static frontend
 ├── requirements.txt
 ├── screenshots/
 │   └── busqueda.png
