@@ -80,8 +80,8 @@ async function buscar() {
     tr.innerHTML = `
       <td>${escapeHtml(r.titulo)}</td>
       <td>${r.anio ?? "—"}</td>
-      <td>${r.tipo ?? "—"}</td>
-      <td>${(r.generos || []).join(", ") || "—"}</td>
+      <td>${escapeHtml(r.tipo ?? "—")}</td>
+      <td>${escapeHtml((r.generos || []).join(", ") || "—")}</td>
       <td>${r.rating ?? "—"}</td>
       <td>${resumirNombres(r.directores)}</td>
     `;
@@ -120,9 +120,15 @@ function renderPaginacion(page, totalPages) {
 // --- Detalle (modal) ---------------------------------------------------------
 
 async function verDetalle(tconst) {
-  const resp = await fetch(`/api/pelicula/${tconst}`);
-  if (!resp.ok) return;
-  const d = await resp.json();
+  let d;
+  try {
+    const resp = await fetch(`/api/pelicula/${encodeURIComponent(tconst)}`);
+    if (!resp.ok) throw new Error(resp.statusText);
+    d = await resp.json();
+  } catch (err) {
+    estado.textContent = "No se pudo cargar el detalle del título.";
+    return;
+  }
 
   const reparto = (d.reparto || [])
     .slice(0, 15)
@@ -134,21 +140,21 @@ async function verDetalle(tconst) {
     ${d.titulo_original && d.titulo_original !== d.titulo ? `<p class="etiqueta">Título original: ${escapeHtml(d.titulo_original)}</p>` : ""}
 
     <div class="seccion">
-      <span class="etiqueta">Tipo:</span> ${d.tipo ?? "—"} &nbsp;·&nbsp;
+      <span class="etiqueta">Tipo:</span> ${escapeHtml(d.tipo ?? "—")} &nbsp;·&nbsp;
       <span class="etiqueta">Duración:</span> ${d.duracion_min ? d.duracion_min + " min" : "—"} &nbsp;·&nbsp;
       <span class="etiqueta">Rating:</span> ${d.rating ?? "—"} (${(d.votos ?? 0).toLocaleString()} votos)
     </div>
 
     <div class="seccion">
-      <span class="etiqueta">Géneros:</span> ${(d.generos || []).join(", ") || "—"}
+      <span class="etiqueta">Géneros:</span> ${escapeHtml((d.generos || []).join(", ") || "—")}
     </div>
 
     <div class="seccion">
-      <span class="etiqueta">Director(es):</span> ${(d.directores || []).join(", ") || "—"}
+      <span class="etiqueta">Director(es):</span> ${escapeHtml((d.directores || []).join(", ") || "—")}
     </div>
 
     <div class="seccion">
-      <span class="etiqueta">Guionista(s):</span> ${(d.guionistas || []).join(", ") || "—"}
+      <span class="etiqueta">Guionista(s):</span> ${escapeHtml((d.guionistas || []).join(", ") || "—")}
     </div>
 
     <div class="seccion">
@@ -164,6 +170,9 @@ document.getElementById("cerrar-modal").addEventListener("click", () => {
 });
 modalFondo.addEventListener("click", (e) => {
   if (e.target === modalFondo) modalFondo.classList.add("oculto");
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") modalFondo.classList.add("oculto");
 });
 
 // --- Utilidad ----------------------------------------------------------------

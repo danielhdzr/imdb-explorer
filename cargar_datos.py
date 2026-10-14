@@ -108,7 +108,8 @@ ANALYZE;
 def leer_tsv(nombre):
     """Itera las filas (listas de str, None para \\N) de un .tsv.gz remoto."""
     print(f"  descargando {nombre}...", flush=True)
-    resp = urllib.request.urlopen(BASE_URL + nombre, context=SSL_CTX)
+    # Sin timeout, una conexión que se cuelga dejaría el script esperando para siempre.
+    resp = urllib.request.urlopen(BASE_URL + nombre, context=SSL_CTX, timeout=60)
     texto = io.TextIOWrapper(gzip.GzipFile(fileobj=resp), encoding="utf-8")
     next(texto)  # encabezado
     for linea in texto:

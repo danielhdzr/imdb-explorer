@@ -111,7 +111,7 @@ reciente, y se muestra el tiempo que tardó cada búsqueda.
 ## Estructura del proyecto
 
 ```
-proyecto_app_imdb/
+imdb-explorer/
 ├── Dockerfile
 ├── docker-compose.yml
 ├── .dockerignore
@@ -119,6 +119,8 @@ proyecto_app_imdb/
 ├── cargar_datos.py      # carga IMDb → Postgres en streaming
 ├── main.py              # API FastAPI + montaje del frontend estático
 ├── requirements.txt
+├── screenshots/
+│   └── busqueda.png
 └── static/
     ├── index.html
     ├── style.css

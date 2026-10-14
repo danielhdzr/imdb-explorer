@@ -3,7 +3,7 @@ IMDb Explorer — backend FastAPI
 """
 
 import os
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from typing import Optional
 
 from psycopg import sql
@@ -17,7 +17,9 @@ from fastapi.staticfiles import StaticFiles
 
 # Cadena de conexión completa, p. ej. la que da Neon:
 # postgresql://usuario:clave@ep-xxxx.region.aws.neon.tech/imdb?sslmode=require
-DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://localhost/imdb")
+DATABASE_URL = os.environ.get("DATABASE_URL")
+if not DATABASE_URL:
+    raise SystemExit("Falta la variable DATABASE_URL (ver .env.example).")
 
 # check_connection descarta conexiones que el servidor cerró mientras
 # estaban ociosas (Neon suspende la base tras unos minutos sin uso).
@@ -57,18 +59,18 @@ TIPOS_TITULO = [
 ]
 
 PAGE_SIZE = 20
+# Con ~170k títulos hay unas 8,500 páginas; el tope evita un OFFSET fuera de rango.
+MAX_PAGE = 10_000
 
-app = FastAPI(title="IMDb Explorer")
 
-
-@app.on_event("startup")
-def abrir_pool():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     pool.open()
-
-
-@app.on_event("shutdown")
-def cerrar_pool():
+    yield
     pool.close()
+
+
+app = FastAPI(title="IMDb Explorer", lifespan=lifespan)
 
 
 def tconst(title_id):
@@ -77,8 +79,10 @@ def tconst(title_id):
 
 def title_id(tconst_str):
     """'tt0133093' -> 133093; None si el formato no es válido."""
-    if tconst_str.startswith("tt") and tconst_str[2:].isdigit():
-        return int(tconst_str[2:])
+    numero = tconst_str[2:]
+    # isascii(): isdigit() también acepta caracteres como '²' que int() rechaza.
+    if tconst_str.startswith("tt") and numero.isascii() and numero.isdigit() and len(numero) <= 9:
+        return int(numero)
     return None
 
 
@@ -228,7 +232,7 @@ def buscar_peliculas(
     rating_min: Optional[float] = Query(None, ge=0, le=10),
     year_min: Optional[int] = None,
     year_max: Optional[int] = None,
-    page: int = Query(1, ge=1),
+    page: int = Query(1, ge=1, le=MAX_PAGE),
 ):
     where, params = construir_filtros(
         titulo, tipo, genero, director, actor, rating_min, year_min, year_max
