@@ -7,6 +7,10 @@ director, actor/actriz, rating mínimo y rango de años. Proyecto de
 portafolio: backend en FastAPI con SQL dinámico sobre PostgreSQL (alojado
 gratis en Neon), frontend en HTML/JS plano, empaquetado en Docker.
 
+> **Demo en vivo:** _enlace próximamente_. Corre en el plan gratuito de
+> Render, que se apaga tras ~15 minutos sin tráfico: la primera visita puede
+> tardar 30–60 segundos en cargar. No está rota, solo está despertando.
+
 ![Interfaz de búsqueda](screenshots/busqueda.png)
 
 ## Qué hace

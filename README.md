@@ -7,6 +7,10 @@ actor/actress, minimum rating and year range. Portfolio project: FastAPI
 backend with dynamic SQL over PostgreSQL (hosted for free on Neon), plain
 HTML/JS frontend, packaged with Docker.
 
+> **Live demo:** _link coming soon_. It runs on Render's free plan, which
+> sleeps after ~15 minutes without traffic: the first visit can take
+> 30–60 seconds to load. It is not broken, just waking up.
+
 ![Search interface](screenshots/busqueda.png)
 
 > The interface and the API field names are in Spanish; this README
