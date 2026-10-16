@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: imdb-explorer
+    runtime: docker
+    plan: free
+    healthCheckPath: /api/tipos
+    envVars:
+      - key: DATABASE_URL
+        sync: false # se pega a mano en el panel de Render (cadena de Neon)
