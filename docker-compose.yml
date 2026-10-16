@@ -5,4 +5,4 @@ services:
     # La base vive en la nube (Neon); DATABASE_URL se lee de .env.
     env_file: .env
     ports:
-      - "8000:8000"
+      - "8001:8000"

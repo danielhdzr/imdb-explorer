@@ -56,10 +56,10 @@ públicos de IMDb, sin descargar nada a disco.
 
    ```bash
    docker compose up -d --build
-   # o bien: venv/bin/uvicorn main:app --env-file .env
+   # o bien: venv/bin/uvicorn main:app --port 8001 --env-file .env
    ```
 
-El sitio queda en **http://localhost:8000**.
+El sitio queda en **http://localhost:8001**.
 
 > **Sobre los datos**: para caber en el plan gratuito se cargan los
 > títulos con al menos 200 votos (~170k: todas las películas y series

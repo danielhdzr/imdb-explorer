@@ -58,10 +58,10 @@ IMDb's public datasets, without downloading anything to disk.
 
    ```bash
    docker compose up -d --build
-   # or: venv/bin/uvicorn main:app --env-file .env
+   # or: venv/bin/uvicorn main:app --port 8001 --env-file .env
    ```
 
-The site runs at **http://localhost:8000**.
+The site runs at **http://localhost:8001**.
 
 > **About the data**: to fit in the free plan, only titles with at least
 > 200 votes are loaded (~173k: every well-known movie and series), without
@@ -80,7 +80,7 @@ The site runs at **http://localhost:8000**.
 
 `/api/peliculas` parameters: `titulo` (title), `tipo` (type), `genero`
 (genre), `director`, `actor`, `rating_min`, `year_min`, `year_max`,
-`page`. Interactive docs at http://localhost:8000/docs.
+`page`. Interactive docs at http://localhost:8001/docs.
 
 ## Technical documentation
 
